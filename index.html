@@ -897,7 +897,7 @@ using (true);`;
 
     function initSupabaseClient() {
       const url = normalizeSupabaseUrl(state.supabase.url);
-      const anonKey = state.supabase.anonKey.trim();
+      const anonKey = normalizeSupabaseKey(state.supabase.anonKey);
       if (!url || !anonKey) {
         state.supabase.client = null;
         state.supabase.enabled = false;
@@ -911,21 +911,28 @@ using (true);`;
         return false;
       }
       state.supabase.url = url;
+      state.supabase.anonKey = anonKey;
       state.supabase.client = window.supabase.createClient(url, anonKey);
       state.supabase.enabled = true;
-      state.supabase.status = "Cloud configured";
+      state.supabase.status = `Cloud configured for ${url}`;
       return true;
     }
 
     function normalizeSupabaseUrl(value) {
       const trimmed = value.trim();
       if (!trimmed) return "";
+      const match = trimmed.match(/https:\/\/[a-z0-9-]+\.supabase\.co/i);
+      if (match) return match[0].replace(/\/+$/, "");
       try {
         const url = new URL(trimmed);
         return url.origin;
       } catch (error) {
         return trimmed.replace(/\/rest\/v1\/?$/i, "").replace(/\/+$/, "");
       }
+    }
+
+    function normalizeSupabaseKey(value) {
+      return value.trim().replace(/^bearer\s+/i, "").replace(/^apikey:\s*/i, "").trim();
     }
 
     function scheduleCloudSave() {
@@ -955,11 +962,43 @@ using (true);`;
         state.supabase.lastSync = new Date().toLocaleString();
         state.supabase.status = rows.length ? "Cloud saved" : "Cloud connected";
       } catch (error) {
-        state.supabase.status = `Cloud save failed: ${error.message}`;
+        state.supabase.status = cloudErrorMessage("Cloud save failed", error);
       } finally {
         state.supabase.saving = false;
         renderSyncStatus();
       }
+    }
+
+    async function testCloudConnection() {
+      if (!state.supabase.enabled || !state.supabase.client) {
+        showToast("Add Supabase settings first.");
+        return;
+      }
+      state.supabase.status = "Testing cloud connection...";
+      renderSyncStatus();
+      try {
+        const { error } = await state.supabase.client
+          .from(SUPABASE_TABLE)
+          .select("id", { count: "exact", head: true });
+        if (error) throw error;
+        state.supabase.status = `Connection test passed for ${state.supabase.url}`;
+        renderSyncStatus();
+        showToast("Supabase connection works.");
+      } catch (error) {
+        state.supabase.status = cloudErrorMessage("Connection test failed", error);
+        renderSyncStatus();
+      }
+    }
+
+    function cloudErrorMessage(prefix, error) {
+      const message = error?.message || "Unknown error";
+      if (/invalid path/i.test(message)) {
+        return `${prefix}: ${message}. Check that the URL field contains only https://your-project-ref.supabase.co and rerun Save Connection.`;
+      }
+      if (/relation .* does not exist/i.test(message) || /could not find the table/i.test(message)) {
+        return `${prefix}: ${message}. Run the setup SQL in Supabase SQL Editor.`;
+      }
+      return `${prefix}: ${message}`;
     }
 
     async function loadCloudAll() {
@@ -986,7 +1025,7 @@ using (true);`;
         render();
         showToast("Cloud records loaded.");
       } catch (error) {
-        state.supabase.status = `Cloud load failed: ${error.message}`;
+        state.supabase.status = cloudErrorMessage("Cloud load failed", error);
         renderSyncStatus();
       }
     }
@@ -999,7 +1038,7 @@ using (true);`;
         state.supabase.status = "Cloud record deleted";
         renderSyncStatus();
       } catch (error) {
-        state.supabase.status = `Cloud delete failed: ${error.message}`;
+        state.supabase.status = cloudErrorMessage("Cloud delete failed", error);
         renderSyncStatus();
       }
     }
@@ -1402,6 +1441,7 @@ using (true);`;
             <div class="field full">
               <div class="toolbar" style="justify-content:flex-start">
                 <button class="btn primary" data-action="save-supabase">Save Connection</button>
+                <button class="btn" data-action="test-cloud">Test Connection</button>
                 <button class="btn" data-action="load-cloud">Load Cloud Records</button>
                 <button class="btn" data-action="save-cloud">Save Local Records to Cloud</button>
                 <button class="btn danger" data-action="clear-supabase">Clear Connection</button>
@@ -1733,6 +1773,7 @@ using (true);`;
       }
       if (target.dataset.action === "load-cloud") loadCloudAll();
       if (target.dataset.action === "save-cloud") saveCloudAll();
+      if (target.dataset.action === "test-cloud") testCloudConnection();
       if (target.dataset.action === "clear-supabase") {
         localStorage.removeItem(SUPABASE_CONFIG_KEY);
         state.supabase.url = "";
