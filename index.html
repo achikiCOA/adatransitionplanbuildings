@@ -896,7 +896,7 @@ using (true);`;
     }
 
     function initSupabaseClient() {
-      const url = state.supabase.url.trim();
+      const url = normalizeSupabaseUrl(state.supabase.url);
       const anonKey = state.supabase.anonKey.trim();
       if (!url || !anonKey) {
         state.supabase.client = null;
@@ -910,10 +910,22 @@ using (true);`;
         state.supabase.status = "Supabase library did not load";
         return false;
       }
+      state.supabase.url = url;
       state.supabase.client = window.supabase.createClient(url, anonKey);
       state.supabase.enabled = true;
       state.supabase.status = "Cloud configured";
       return true;
+    }
+
+    function normalizeSupabaseUrl(value) {
+      const trimmed = value.trim();
+      if (!trimmed) return "";
+      try {
+        const url = new URL(trimmed);
+        return url.origin;
+      } catch (error) {
+        return trimmed.replace(/\/rest\/v1\/?$/i, "").replace(/\/+$/, "");
+      }
     }
 
     function scheduleCloudSave() {
@@ -1714,8 +1726,8 @@ using (true);`;
       if (target.dataset.action === "save-supabase") {
         state.supabase.url = document.getElementById("supabaseUrl")?.value || "";
         state.supabase.anonKey = document.getElementById("supabaseAnonKey")?.value || "";
-        saveSupabaseConfig();
         initSupabaseClient();
+        saveSupabaseConfig();
         renderMain();
         showToast(state.supabase.enabled ? "Supabase connection saved." : "Supabase settings incomplete.");
       }
