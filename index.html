@@ -517,6 +517,20 @@
       display: none;
     }
 
+    .code-box {
+      width: 100%;
+      overflow: auto;
+      white-space: pre;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #17212f;
+      color: #f8fafc;
+      padding: 14px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.82rem;
+      line-height: 1.5;
+    }
+
     @media (max-width: 980px) {
       .topbar-inner {
         align-items: flex-start;
@@ -613,6 +627,7 @@
           <button class="btn" id="exportCsvBtn" title="Export barrier schedule">Export CSV</button>
           <button class="btn" id="printBtn" title="Print selected building">Print</button>
           <button class="btn" id="importBtn" title="Import saved JSON">Import</button>
+          <button class="btn" id="syncTabBtn" title="Configure cloud sync">Cloud Sync</button>
           <input class="file-input" id="importFile" type="file" accept="application/json">
         </div>
       </div>
@@ -639,15 +654,68 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     const STORAGE_KEY = "ada-building-inventory-v1";
+    const SUPABASE_CONFIG_KEY = "ada-building-supabase-config-v1";
+    const SUPABASE_TABLE = "ada_buildings";
+    const SUPABASE_SETUP_SQL = `create table if not exists public.ada_buildings (
+  id text primary key,
+  name text,
+  address text,
+  status text,
+  data jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.ada_buildings enable row level security;
+
+drop policy if exists "Allow public read for field app" on public.ada_buildings;
+drop policy if exists "Allow public insert for field app" on public.ada_buildings;
+drop policy if exists "Allow public update for field app" on public.ada_buildings;
+drop policy if exists "Allow public delete for field app" on public.ada_buildings;
+
+create policy "Allow public read for field app"
+on public.ada_buildings
+for select
+to anon
+using (true);
+
+create policy "Allow public insert for field app"
+on public.ada_buildings
+for insert
+to anon
+with check (true);
+
+create policy "Allow public update for field app"
+on public.ada_buildings
+for update
+to anon
+using (true)
+with check (true);
+
+create policy "Allow public delete for field app"
+on public.ada_buildings
+for delete
+to anon
+using (true);`;
 
     const state = {
       buildings: [],
       selectedId: "",
       tab: "overview",
       search: "",
-      filterStatus: ""
+      filterStatus: "",
+      supabase: {
+        url: "",
+        anonKey: "",
+        enabled: false,
+        status: "Local only",
+        lastSync: "",
+        client: null,
+        syncTimer: null,
+        saving: false
+      }
     };
 
     const tabs = [
@@ -657,7 +725,8 @@
       ["publicSpaces", "Public Spaces"],
       ["restrooms", "Restrooms"],
       ["barriers", "Barrier Schedule"],
-      ["exports", "Plan Output"]
+      ["exports", "Plan Output"],
+      ["sync", "Cloud Sync"]
     ];
 
     const checklistLabels = {
@@ -790,6 +859,17 @@
 
     function load() {
       const raw = localStorage.getItem(STORAGE_KEY);
+      const supabaseRaw = localStorage.getItem(SUPABASE_CONFIG_KEY);
+      if (supabaseRaw) {
+        try {
+          const config = JSON.parse(supabaseRaw);
+          state.supabase.url = config.url || "";
+          state.supabase.anonKey = config.anonKey || "";
+          initSupabaseClient();
+        } catch (error) {
+          state.supabase.status = "Cloud config could not be loaded";
+        }
+      }
       if (!raw) return;
       try {
         const data = JSON.parse(raw);
@@ -805,6 +885,111 @@
         buildings: state.buildings,
         selectedId: state.selectedId
       }));
+      scheduleCloudSave();
+    }
+
+    function saveSupabaseConfig() {
+      localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify({
+        url: state.supabase.url,
+        anonKey: state.supabase.anonKey
+      }));
+    }
+
+    function initSupabaseClient() {
+      const url = state.supabase.url.trim();
+      const anonKey = state.supabase.anonKey.trim();
+      if (!url || !anonKey) {
+        state.supabase.client = null;
+        state.supabase.enabled = false;
+        state.supabase.status = "Local only";
+        return false;
+      }
+      if (!window.supabase?.createClient) {
+        state.supabase.client = null;
+        state.supabase.enabled = false;
+        state.supabase.status = "Supabase library did not load";
+        return false;
+      }
+      state.supabase.client = window.supabase.createClient(url, anonKey);
+      state.supabase.enabled = true;
+      state.supabase.status = "Cloud configured";
+      return true;
+    }
+
+    function scheduleCloudSave() {
+      if (!state.supabase.enabled || !state.supabase.client) return;
+      clearTimeout(state.supabase.syncTimer);
+      state.supabase.syncTimer = setTimeout(() => saveCloudAll(), 900);
+    }
+
+    async function saveCloudAll() {
+      if (!state.supabase.enabled || !state.supabase.client || state.supabase.saving) return;
+      state.supabase.saving = true;
+      state.supabase.status = "Saving to cloud...";
+      renderSyncStatus();
+      const rows = state.buildings.map((building) => ({
+        id: building.id,
+        name: building.name || "Untitled building",
+        address: building.address || "",
+        status: building.status || "Draft",
+        data: building,
+        updated_at: new Date().toISOString()
+      }));
+      try {
+        if (rows.length) {
+          const { error } = await state.supabase.client.from(SUPABASE_TABLE).upsert(rows, { onConflict: "id" });
+          if (error) throw error;
+        }
+        state.supabase.lastSync = new Date().toLocaleString();
+        state.supabase.status = rows.length ? "Cloud saved" : "Cloud connected";
+      } catch (error) {
+        state.supabase.status = `Cloud save failed: ${error.message}`;
+      } finally {
+        state.supabase.saving = false;
+        renderSyncStatus();
+      }
+    }
+
+    async function loadCloudAll() {
+      if (!state.supabase.enabled || !state.supabase.client) {
+        showToast("Add Supabase settings first.");
+        return;
+      }
+      state.supabase.status = "Loading from cloud...";
+      renderSyncStatus();
+      try {
+        const { data, error } = await state.supabase.client
+          .from(SUPABASE_TABLE)
+          .select("id,data,updated_at")
+          .order("updated_at", { ascending: false });
+        if (error) throw error;
+        state.buildings = (data || []).map((row) => ({ ...row.data, id: row.data?.id || row.id }));
+        state.selectedId = state.buildings[0]?.id || "";
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          buildings: state.buildings,
+          selectedId: state.selectedId
+        }));
+        state.supabase.lastSync = new Date().toLocaleString();
+        state.supabase.status = `Loaded ${state.buildings.length} cloud records`;
+        render();
+        showToast("Cloud records loaded.");
+      } catch (error) {
+        state.supabase.status = `Cloud load failed: ${error.message}`;
+        renderSyncStatus();
+      }
+    }
+
+    async function deleteCloudBuilding(id) {
+      if (!state.supabase.enabled || !state.supabase.client || !id) return;
+      try {
+        const { error } = await state.supabase.client.from(SUPABASE_TABLE).delete().eq("id", id);
+        if (error) throw error;
+        state.supabase.status = "Cloud record deleted";
+        renderSyncStatus();
+      } catch (error) {
+        state.supabase.status = `Cloud delete failed: ${error.message}`;
+        renderSyncStatus();
+      }
     }
 
     function selectedBuilding() {
@@ -877,9 +1062,11 @@
       if (!building) return;
       const ok = confirm(`Delete ${building.name || "this building"} from this inventory?`);
       if (!ok) return;
+      const deletedId = building.id;
       state.buildings = state.buildings.filter((candidate) => candidate.id !== building.id);
       state.selectedId = state.buildings[0]?.id || "";
       save();
+      deleteCloudBuilding(deletedId);
       render();
       showToast("Building deleted.");
     }
@@ -944,6 +1131,10 @@
     function renderMain() {
       const main = document.getElementById("main");
       const building = selectedBuilding();
+      if (state.tab === "sync") {
+        main.innerHTML = renderSync();
+        return;
+      }
       if (!building) {
         main.innerHTML = `
           <section class="empty-state">
@@ -982,6 +1173,7 @@
       if (state.tab === "publicSpaces") return renderPublicSpaces(building);
       if (state.tab === "restrooms") return renderRestrooms(building);
       if (state.tab === "barriers") return renderBarriers(building);
+      if (state.tab === "sync") return renderSync();
       return renderExports(building);
     }
 
@@ -1175,6 +1367,56 @@
           </div>
         </section>
       `;
+    }
+
+    function renderSync() {
+      return `
+        <section class="panel">
+          <div class="section-title">
+            <h3>Supabase Cloud Sync</h3>
+            <span class="pill ${state.supabase.enabled ? "good" : "warn"}" id="syncStatus">${escapeHtml(syncStatusText())}</span>
+          </div>
+          <div class="grid">
+            <div class="field wide">
+              <label for="supabaseUrl">Supabase project URL</label>
+              <input class="input" id="supabaseUrl" type="url" value="${escapeAttr(state.supabase.url)}" placeholder="https://your-project.supabase.co">
+              <span class="hint">Supabase Dashboard: Project Settings > API > Project URL.</span>
+            </div>
+            <div class="field wide">
+              <label for="supabaseAnonKey">Supabase anon public key</label>
+              <input class="input" id="supabaseAnonKey" type="password" value="${escapeAttr(state.supabase.anonKey)}" placeholder="Paste anon public key">
+              <span class="hint">Use the anon public key only. Never paste the service_role key into this browser app.</span>
+            </div>
+            <div class="field full">
+              <div class="toolbar" style="justify-content:flex-start">
+                <button class="btn primary" data-action="save-supabase">Save Connection</button>
+                <button class="btn" data-action="load-cloud">Load Cloud Records</button>
+                <button class="btn" data-action="save-cloud">Save Local Records to Cloud</button>
+                <button class="btn danger" data-action="clear-supabase">Clear Connection</button>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="section-title">
+            <h3>Database Setup SQL</h3>
+            <button class="btn" data-action="copy-sql">Copy SQL</button>
+          </div>
+          <p class="meta-line">Paste this into Supabase SQL Editor once. This simple pilot policy lets anyone with the public app link read and edit records; add sign-in before collecting sensitive information.</p>
+          <pre class="code-box">${escapeHtml(SUPABASE_SETUP_SQL)}</pre>
+        </section>
+      `;
+    }
+
+    function syncStatusText() {
+      const parts = [state.supabase.status || "Local only"];
+      if (state.supabase.lastSync) parts.push(`Last sync ${state.supabase.lastSync}`);
+      return parts.join(" - ");
+    }
+
+    function renderSyncStatus() {
+      const status = document.getElementById("syncStatus");
+      if (status) status.textContent = syncStatusText();
     }
 
     function quickBarrierPanel(category) {
@@ -1439,6 +1681,10 @@
       if (target.id === "exportCsvBtn") exportCsv();
       if (target.id === "printBtn") window.print();
       if (target.id === "importBtn") document.getElementById("importFile").click();
+      if (target.id === "syncTabBtn") {
+        state.tab = "sync";
+        renderMain();
+      }
       if (target.dataset.select) {
         state.selectedId = target.dataset.select;
         save();
@@ -1464,6 +1710,28 @@
       if (target.dataset.copyPlan !== undefined) {
         await navigator.clipboard.writeText(planNarrative(selectedBuilding()));
         showToast("Narrative copied.");
+      }
+      if (target.dataset.action === "save-supabase") {
+        state.supabase.url = document.getElementById("supabaseUrl")?.value || "";
+        state.supabase.anonKey = document.getElementById("supabaseAnonKey")?.value || "";
+        saveSupabaseConfig();
+        initSupabaseClient();
+        renderMain();
+        showToast(state.supabase.enabled ? "Supabase connection saved." : "Supabase settings incomplete.");
+      }
+      if (target.dataset.action === "load-cloud") loadCloudAll();
+      if (target.dataset.action === "save-cloud") saveCloudAll();
+      if (target.dataset.action === "clear-supabase") {
+        localStorage.removeItem(SUPABASE_CONFIG_KEY);
+        state.supabase.url = "";
+        state.supabase.anonKey = "";
+        initSupabaseClient();
+        renderMain();
+        showToast("Supabase connection cleared.");
+      }
+      if (target.dataset.action === "copy-sql") {
+        await navigator.clipboard.writeText(SUPABASE_SETUP_SQL);
+        showToast("Setup SQL copied.");
       }
     });
 
