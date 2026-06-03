@@ -664,40 +664,49 @@
   name text,
   address text,
   status text,
+  created_by uuid,
   data jsonb not null,
   updated_at timestamptz not null default now()
 );
 
 alter table public.ada_buildings enable row level security;
 
+alter table public.ada_buildings
+add column if not exists created_by uuid,
+add column if not exists updated_at timestamptz not null default now();
+
 drop policy if exists "Allow public read for field app" on public.ada_buildings;
 drop policy if exists "Allow public insert for field app" on public.ada_buildings;
 drop policy if exists "Allow public update for field app" on public.ada_buildings;
 drop policy if exists "Allow public delete for field app" on public.ada_buildings;
+drop policy if exists "Allow signed-in read for field app" on public.ada_buildings;
+drop policy if exists "Allow signed-in insert for field app" on public.ada_buildings;
+drop policy if exists "Allow signed-in update for field app" on public.ada_buildings;
+drop policy if exists "Allow signed-in delete for field app" on public.ada_buildings;
 
-create policy "Allow public read for field app"
+create policy "Allow signed-in read for field app"
 on public.ada_buildings
 for select
-to anon
+to authenticated
 using (true);
 
-create policy "Allow public insert for field app"
+create policy "Allow signed-in insert for field app"
 on public.ada_buildings
 for insert
-to anon
-with check (true);
+to authenticated
+with check (auth.uid() is not null);
 
-create policy "Allow public update for field app"
+create policy "Allow signed-in update for field app"
 on public.ada_buildings
 for update
-to anon
+to authenticated
 using (true)
-with check (true);
+with check (auth.uid() is not null);
 
-create policy "Allow public delete for field app"
+create policy "Allow signed-in delete for field app"
 on public.ada_buildings
 for delete
-to anon
+to authenticated
 using (true);`;
 
     const state = {
@@ -714,7 +723,9 @@ using (true);`;
         lastSync: "",
         client: null,
         syncTimer: null,
-        saving: false
+        saving: false,
+        session: null,
+        user: null
       }
     };
 
@@ -915,6 +926,13 @@ using (true);`;
       state.supabase.client = window.supabase.createClient(url, anonKey);
       state.supabase.enabled = true;
       state.supabase.status = `Cloud configured for ${url}`;
+      refreshAuthSession();
+      state.supabase.client.auth.onAuthStateChange((_event, session) => {
+        state.supabase.session = session;
+        state.supabase.user = session?.user || null;
+        renderSyncStatus();
+        if (state.tab === "sync") renderMain();
+      });
       return true;
     }
 
@@ -936,13 +954,36 @@ using (true);`;
     }
 
     function scheduleCloudSave() {
-      if (!state.supabase.enabled || !state.supabase.client) return;
+      if (!state.supabase.enabled || !state.supabase.client || !state.supabase.user) return;
       clearTimeout(state.supabase.syncTimer);
       state.supabase.syncTimer = setTimeout(() => saveCloudAll(), 900);
     }
 
+    async function refreshAuthSession() {
+      if (!state.supabase.enabled || !state.supabase.client) return;
+      const { data } = await state.supabase.client.auth.getSession();
+      state.supabase.session = data?.session || null;
+      state.supabase.user = state.supabase.session?.user || null;
+      renderSyncStatus();
+      if (state.tab === "sync") renderMain();
+    }
+
+    function requireSignedIn() {
+      if (!state.supabase.enabled || !state.supabase.client) {
+        showToast("Add Supabase settings first.");
+        return false;
+      }
+      if (!state.supabase.user) {
+        state.supabase.status = "Sign in before using cloud records";
+        renderSyncStatus();
+        showToast("Sign in with email first.");
+        return false;
+      }
+      return true;
+    }
+
     async function saveCloudAll() {
-      if (!state.supabase.enabled || !state.supabase.client || state.supabase.saving) return;
+      if (!requireSignedIn() || state.supabase.saving) return;
       state.supabase.saving = true;
       state.supabase.status = "Saving to cloud...";
       renderSyncStatus();
@@ -951,6 +992,7 @@ using (true);`;
         name: building.name || "Untitled building",
         address: building.address || "",
         status: building.status || "Draft",
+        created_by: state.supabase.user.id,
         data: building,
         updated_at: new Date().toISOString()
       }));
@@ -970,10 +1012,7 @@ using (true);`;
     }
 
     async function testCloudConnection() {
-      if (!state.supabase.enabled || !state.supabase.client) {
-        showToast("Add Supabase settings first.");
-        return;
-      }
+      if (!requireSignedIn()) return;
       state.supabase.status = "Testing cloud connection...";
       renderSyncStatus();
       try {
@@ -1001,11 +1040,47 @@ using (true);`;
       return `${prefix}: ${message}`;
     }
 
-    async function loadCloudAll() {
+    async function signInWithEmail() {
       if (!state.supabase.enabled || !state.supabase.client) {
-        showToast("Add Supabase settings first.");
+        showToast("Save Supabase connection first.");
         return;
       }
+      const email = document.getElementById("signInEmail")?.value.trim();
+      if (!email) {
+        showToast("Enter an email address.");
+        return;
+      }
+      state.supabase.status = "Sending sign-in link...";
+      renderSyncStatus();
+      const { error } = await state.supabase.client.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: window.location.href.split("#")[0]
+        }
+      });
+      if (error) {
+        state.supabase.status = `Sign-in failed: ${error.message}`;
+      } else {
+        state.supabase.status = "Check your email for the sign-in link";
+      }
+      renderSyncStatus();
+    }
+
+    async function signOut() {
+      if (!state.supabase.enabled || !state.supabase.client) return;
+      const { error } = await state.supabase.client.auth.signOut();
+      if (error) {
+        state.supabase.status = `Sign-out failed: ${error.message}`;
+      } else {
+        state.supabase.session = null;
+        state.supabase.user = null;
+        state.supabase.status = "Signed out";
+      }
+      renderMain();
+    }
+
+    async function loadCloudAll() {
+      if (!requireSignedIn()) return;
       state.supabase.status = "Loading from cloud...";
       renderSyncStatus();
       try {
@@ -1031,7 +1106,7 @@ using (true);`;
     }
 
     async function deleteCloudBuilding(id) {
-      if (!state.supabase.enabled || !state.supabase.client || !id) return;
+      if (!state.supabase.enabled || !state.supabase.client || !state.supabase.user || !id) return;
       try {
         const { error } = await state.supabase.client.from(SUPABASE_TABLE).delete().eq("id", id);
         if (error) throw error;
@@ -1441,9 +1516,6 @@ using (true);`;
             <div class="field full">
               <div class="toolbar" style="justify-content:flex-start">
                 <button class="btn primary" data-action="save-supabase">Save Connection</button>
-                <button class="btn" data-action="test-cloud">Test Connection</button>
-                <button class="btn" data-action="load-cloud">Load Cloud Records</button>
-                <button class="btn" data-action="save-cloud">Save Local Records to Cloud</button>
                 <button class="btn danger" data-action="clear-supabase">Clear Connection</button>
               </div>
             </div>
@@ -1451,10 +1523,40 @@ using (true);`;
         </section>
         <section class="panel">
           <div class="section-title">
+            <h3>Sign In</h3>
+            <span class="pill ${state.supabase.user ? "good" : "warn"}">${escapeHtml(state.supabase.user ? state.supabase.user.email : "Not signed in")}</span>
+          </div>
+          <div class="grid">
+            <div class="field wide">
+              <label for="signInEmail">Email address</label>
+              <input class="input" id="signInEmail" type="email" value="${escapeAttr(state.supabase.user?.email || "")}" placeholder="name@example.com">
+              <span class="hint">Supabase will email a magic sign-in link. Open the link in this same browser, then return here.</span>
+            </div>
+            <div class="field full">
+              <div class="toolbar" style="justify-content:flex-start">
+                <button class="btn primary" data-action="sign-in-email">Send Sign-In Link</button>
+                <button class="btn" data-action="sign-out" ${state.supabase.user ? "" : "disabled"}>Sign Out</button>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="section-title">
+            <h3>Cloud Records</h3>
+            <span class="pill ${state.supabase.user ? "good" : "warn"}">${state.supabase.user ? "Signed in" : "Sign in required"}</span>
+          </div>
+          <div class="toolbar" style="justify-content:flex-start">
+            <button class="btn" data-action="test-cloud">Test Connection</button>
+            <button class="btn" data-action="load-cloud">Load Cloud Records</button>
+            <button class="btn" data-action="save-cloud">Save Local Records to Cloud</button>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="section-title">
             <h3>Database Setup SQL</h3>
             <button class="btn" data-action="copy-sql">Copy SQL</button>
           </div>
-          <p class="meta-line">Paste this into Supabase SQL Editor once. This simple pilot policy lets anyone with the public app link read and edit records; add sign-in before collecting sensitive information.</p>
+          <p class="meta-line">Paste this into Supabase SQL Editor after publishing this update. It replaces the public pilot policies with signed-in-user policies.</p>
           <pre class="code-box">${escapeHtml(SUPABASE_SETUP_SQL)}</pre>
         </section>
       `;
@@ -1462,6 +1564,7 @@ using (true);`;
 
     function syncStatusText() {
       const parts = [state.supabase.status || "Local only"];
+      if (state.supabase.user?.email) parts.push(`Signed in as ${state.supabase.user.email}`);
       if (state.supabase.lastSync) parts.push(`Last sync ${state.supabase.lastSync}`);
       return parts.join(" - ");
     }
@@ -1774,6 +1877,8 @@ using (true);`;
       if (target.dataset.action === "load-cloud") loadCloudAll();
       if (target.dataset.action === "save-cloud") saveCloudAll();
       if (target.dataset.action === "test-cloud") testCloudConnection();
+      if (target.dataset.action === "sign-in-email") signInWithEmail();
+      if (target.dataset.action === "sign-out") signOut();
       if (target.dataset.action === "clear-supabase") {
         localStorage.removeItem(SUPABASE_CONFIG_KEY);
         state.supabase.url = "";
