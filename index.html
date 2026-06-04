@@ -2110,6 +2110,7 @@ on conflict (email) do update set active = true;`)}</pre>
       }
       if (target.dataset.select) {
         state.selectedId = target.dataset.select;
+        state.tab = "overview";
         save();
         render();
       }
