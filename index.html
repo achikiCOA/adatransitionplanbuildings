@@ -830,6 +830,7 @@ using (
       tab: "overview",
       search: "",
       filterStatus: "",
+      quickBarrierDrafts: {},
       supabase: {
         url: SUPABASE_URL,
         anonKey: SUPABASE_ANON_KEY,
@@ -947,6 +948,18 @@ using (
         targetYear: "",
         status: "Open",
         notes: ""
+      };
+    }
+
+    function blankQuickBarrier(category = "parking") {
+      return {
+        category,
+        location: "",
+        finding: "",
+        recommendation: "",
+        priority: "2",
+        estimatedCost: "",
+        targetYear: ""
       };
     }
 
@@ -1429,6 +1442,42 @@ using (
       renderMain();
     }
 
+    function quickBarrierDraft(category) {
+      const key = `${state.selectedId || "none"}:${category}`;
+      state.quickBarrierDrafts[key] = state.quickBarrierDrafts[key] || blankQuickBarrier(category);
+      return state.quickBarrierDrafts[key];
+    }
+
+    function updateQuickBarrier(category, field, value) {
+      quickBarrierDraft(category)[field] = value;
+    }
+
+    function saveQuickBarrier(category) {
+      const building = selectedBuilding();
+      if (!building) return;
+      const draft = quickBarrierDraft(category);
+      const hasFinding = [draft.location, draft.finding, draft.recommendation, draft.estimatedCost, draft.targetYear]
+        .some((value) => String(value || "").trim());
+      if (!hasFinding) {
+        showToast("Enter finding details before saving.");
+        return;
+      }
+      building.barriers.push({
+        ...blankBarrier(category),
+        location: draft.location,
+        finding: draft.finding,
+        recommendation: draft.recommendation,
+        priority: draft.priority || "2",
+        estimatedCost: draft.estimatedCost,
+        targetYear: draft.targetYear
+      });
+      state.quickBarrierDrafts[`${building.id}:${category}`] = blankQuickBarrier(category);
+      save();
+      renderMain();
+      renderSidebar();
+      showToast("Finding saved to barrier schedule.");
+    }
+
     function complianceForBuilding(building) {
       const totalFindings = building.barriers?.length || 0;
       const openFindings = building.barriers?.filter((barrier) => barrier.status !== "Complete").length || 0;
@@ -1631,6 +1680,11 @@ using (
               </article>
             `).join("") : `<p class="meta-line">No ${title.toLowerCase()} added yet.</p>`}
           </div>
+          ${items.length ? `
+            <div class="toolbar" style="justify-content:flex-start;margin-top:12px">
+              <button class="btn primary" data-add-item="${collection}">+ Add Another</button>
+            </div>
+          ` : ""}
         </section>
         ${quickBarrierPanel(barrierCategory)}
       `;
@@ -1836,13 +1890,45 @@ on conflict (email) do update set active = true;`)}</pre>
     }
 
     function quickBarrierPanel(category) {
+      const draft = quickBarrierDraft(category);
       return `
         <section class="panel">
           <div class="section-title">
             <h3>Add Finding for ${categoryNames[category]}</h3>
-            <button class="btn primary" data-add-barrier="${category}">+ Add to Schedule</button>
           </div>
-          <p class="meta-line">Use the barrier schedule for non-compliant items, program-access issues, or improvements that need cost, priority, and target-year tracking.</p>
+          <div class="grid">
+            <div class="field wide">
+              <label>Location</label>
+              <input class="input" value="${escapeAttr(draft.location)}" data-quick-barrier="${category}" data-quick-field="location" placeholder="Lot, entrance, room, fixture, or route">
+            </div>
+            <div class="field small">
+              <label>Priority</label>
+              <select class="select" data-quick-barrier="${category}" data-quick-field="priority">
+                ${["1", "2", "3", "4"].map((priority) => `<option ${draft.priority === priority ? "selected" : ""}>${priority}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field full">
+              <label>Existing barrier or finding</label>
+              <textarea class="textarea" data-quick-barrier="${category}" data-quick-field="finding" placeholder="Describe the observed issue">${escapeHtml(draft.finding)}</textarea>
+            </div>
+            <div class="field full">
+              <label>Recommended action</label>
+              <textarea class="textarea" data-quick-barrier="${category}" data-quick-field="recommendation" placeholder="Describe the correction or improvement">${escapeHtml(draft.recommendation)}</textarea>
+            </div>
+            <div class="field small">
+              <label>Estimated cost</label>
+              <input class="input" value="${escapeAttr(draft.estimatedCost)}" data-quick-barrier="${category}" data-quick-field="estimatedCost" placeholder="$">
+            </div>
+            <div class="field small">
+              <label>Target year</label>
+              <input class="input" type="number" value="${escapeAttr(draft.targetYear)}" data-quick-barrier="${category}" data-quick-field="targetYear" placeholder="YYYY">
+            </div>
+            <div class="field full">
+              <div class="toolbar" style="justify-content:flex-start">
+                <button class="btn primary" data-save-quick-barrier="${category}">Save Finding to Schedule</button>
+              </div>
+            </div>
+          </div>
         </section>
       `;
     }
@@ -2063,6 +2149,10 @@ on conflict (email) do update set active = true;`)}</pre>
       }
       if (target.dataset.itemPath) {
         updateItem(target.dataset.collection, target.dataset.id, target.dataset.itemPath, target.value);
+        return;
+      }
+      if (target.dataset.quickBarrier) {
+        updateQuickBarrier(target.dataset.quickBarrier, target.dataset.quickField, target.value);
       }
     });
 
@@ -2093,6 +2183,10 @@ on conflict (email) do update set active = true;`)}</pre>
       }
       if (target.dataset.itemPath) {
         updateItem(target.dataset.collection, target.dataset.id, target.dataset.itemPath, target.value);
+        return;
+      }
+      if (target.dataset.quickBarrier) {
+        updateQuickBarrier(target.dataset.quickBarrier, target.dataset.quickField, target.value);
       }
     });
 
@@ -2131,6 +2225,7 @@ on conflict (email) do update set active = true;`)}</pre>
         save();
         render();
       }
+      if (target.dataset.saveQuickBarrier) saveQuickBarrier(target.dataset.saveQuickBarrier);
       if (target.dataset.copyPlan !== undefined) {
         await navigator.clipboard.writeText(planNarrative(selectedBuilding()));
         showToast("Narrative copied.");
