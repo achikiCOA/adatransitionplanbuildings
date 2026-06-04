@@ -1209,43 +1209,13 @@ using (
       render();
     }
 
-    async function createPasswordAccount() {
-      if (!state.supabase.enabled || !state.supabase.client) {
-        showToast("Cloud connection is not available.");
-        return;
-      }
-      const values = authFormValues();
-      if (!values) return;
-      state.supabase.status = "Creating account...";
-      renderSyncStatus();
-      const { data, error } = await state.supabase.client.auth.signUp({
-        email: values.email,
-        password: values.password,
-        options: {
-          emailRedirectTo: window.location.href.split("#")[0]
-        }
-      });
-      if (error) {
-        state.supabase.status = friendlyAuthError("Account creation failed", error);
-      } else if (data.session) {
-        state.supabase.session = data.session;
-        state.supabase.user = data.user;
-        state.supabase.status = "Account created and signed in";
-        showToast("Account created.");
-      } else {
-        state.supabase.status = "Account created. Try Sign In now. If Supabase requires email confirmation, check your inbox and spam folder first.";
-        showToast("Account created. Try signing in.");
-      }
-      render();
-    }
-
     function friendlyAuthError(prefix, error) {
       const message = error?.message || "Unknown error";
       if (/email not confirmed/i.test(message)) {
         return `${prefix}: email confirmation is still required. Check your inbox and spam folder, or ask the app administrator to confirm the user in Supabase.`;
       }
       if (/invalid login credentials/i.test(message)) {
-        return `${prefix}: email or password did not match. First-time users should create an account first.`;
+        return `${prefix}: email or password did not match. Ask the app administrator to create or reset your account if needed.`;
       }
       return `${prefix}: ${message}`;
     }
@@ -1686,7 +1656,7 @@ using (
             <h3>Cloud Access</h3>
             <span class="pill ${state.supabase.enabled ? "good" : "warn"}" id="syncStatus">${escapeHtml(syncStatusText())}</span>
           </div>
-          <p class="meta-line">The shared database connection is built into this app. Authorized users sign in with email and password before loading or saving cloud records.</p>
+          <p class="meta-line">The shared database connection is built into this app. Accounts are created by the app administrator.</p>
         </section>
         <section class="panel">
           <div class="section-title">
@@ -1697,7 +1667,7 @@ using (
             <div class="field">
               <label for="signInEmail">Email address</label>
               <input class="input" id="signInEmail" type="email" value="${escapeAttr(state.supabase.user?.email || "")}" placeholder="name@example.com">
-              <span class="hint">Use one of the authorized email addresses.</span>
+              <span class="hint">Use the email address assigned by the app administrator.</span>
             </div>
             <div class="field">
               <label for="signInPassword">Password</label>
@@ -1707,7 +1677,6 @@ using (
             <div class="field full">
               <div class="toolbar" style="justify-content:flex-start">
                 <button class="btn primary" data-action="sign-in-password">Sign In</button>
-                <button class="btn" data-action="create-account">Create Account</button>
                 <button class="btn" data-action="sign-out" ${state.supabase.user ? "" : "disabled"}>Sign Out</button>
               </div>
             </div>
@@ -1760,9 +1729,7 @@ on conflict (email) do update set active = true;`)}</pre>
       gate.innerHTML = `
         <section class="login-panel">
           <h1>ADA Building Facility Inventory</h1>
-          <p>Use an authorized email address to enter and sync building accessibility records.</p>
-          <h2 style="font-size:1rem;margin:0 0 10px;">Returning Users</h2>
-          <p class="meta-line">Enter your email address and password, then click Sign In.</p>
+          <p>Sign in with the email and password provided by the app administrator.</p>
           <div class="grid">
             <div class="field full">
               <label for="signInEmail">Email address</label>
@@ -1777,11 +1744,7 @@ on conflict (email) do update set active = true;`)}</pre>
             <button class="btn primary" data-action="sign-in-password">Sign In</button>
           </div>
           <hr class="login-divider">
-          <h2 style="font-size:1rem;margin:0 0 10px;">First-Time Users</h2>
-          <p class="meta-line">Enter your authorized email address and choose a password on this screen, then click Create Account. After the account is created, click Sign In with the same email and password.</p>
-          <div class="login-actions">
-            <button class="btn" data-action="create-account">Create Account</button>
-          </div>
+          <p class="meta-line">Need access or a password reset? Contact the ADA transition plan administrator.</p>
           <div class="login-status" id="loginStatus">${escapeHtml(syncStatusText())}</div>
         </section>
       `;
@@ -2090,7 +2053,6 @@ on conflict (email) do update set active = true;`)}</pre>
       if (target.dataset.action === "save-cloud") saveCloudAll();
       if (target.dataset.action === "test-cloud") testCloudConnection();
       if (target.dataset.action === "sign-in-password") signInWithPassword();
-      if (target.dataset.action === "create-account") createPasswordAccount();
       if (target.dataset.action === "sign-out") signOut();
       if (target.dataset.action === "copy-sql") {
         await navigator.clipboard.writeText(SUPABASE_SETUP_SQL);
