@@ -432,6 +432,33 @@
       font-weight: 760;
     }
 
+    .item-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .item-toggle {
+      text-align: left;
+      background: transparent;
+      color: var(--ink);
+      padding: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .item-toggle .meta-line {
+      font-weight: 500;
+    }
+
+    .collapse-marker {
+      color: var(--brand);
+      font-weight: 800;
+      margin-right: 6px;
+    }
+
     .summary-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -831,6 +858,7 @@ using (
       search: "",
       filterStatus: "",
       quickBarrierDrafts: {},
+      expandedItems: {},
       supabase: {
         url: SUPABASE_URL,
         anonKey: SUPABASE_ANON_KEY,
@@ -1429,7 +1457,9 @@ using (
       const building = selectedBuilding();
       if (!building) return;
       building[collection] = building[collection] || [];
-      building[collection].push(factory());
+      const item = factory();
+      building[collection].push(item);
+      setExpandedItem(collection, item.id);
       save();
       renderMain();
     }
@@ -1440,6 +1470,26 @@ using (
       building[collection] = building[collection].filter((item) => item.id !== id);
       save();
       renderMain();
+    }
+
+    function expandedKey(collection) {
+      return `${state.selectedId || "none"}:${collection}`;
+    }
+
+    function expandedItem(collection, items) {
+      const key = expandedKey(collection);
+      if (!items.length) return "";
+      if (!Object.prototype.hasOwnProperty.call(state.expandedItems, key)) {
+        state.expandedItems[key] = items.at(-1).id;
+      }
+      if (state.expandedItems[key] && !items.some((item) => item.id === state.expandedItems[key])) {
+        state.expandedItems[key] = items.at(-1).id;
+      }
+      return state.expandedItems[key];
+    }
+
+    function setExpandedItem(collection, id) {
+      state.expandedItems[expandedKey(collection)] = id;
     }
 
     function quickBarrierDraft(category) {
@@ -1662,7 +1712,21 @@ using (
       `, "restrooms");
     }
 
+    function itemSummary(collection, item) {
+      if (collection === "entryways") {
+        return [item.name || "Unnamed entrance", `accessible: ${item.accessibleEntrance || "Unknown"}`].join(" - ");
+      }
+      if (collection === "publicSpaces") {
+        return [item.name || "Unnamed space", item.floor ? `floor ${item.floor}` : "", item.use || ""].filter(Boolean).join(" - ");
+      }
+      if (collection === "restrooms") {
+        return [item.name || "Unnamed restroom", item.floor ? `floor ${item.floor}` : "", `accessible: ${item.accessible || "Unknown"}`].filter(Boolean).join(" - ");
+      }
+      return item.name || "Item";
+    }
+
     function renderCollection(collection, title, items, factory, renderBody, barrierCategory) {
+      const openId = expandedItem(collection, items);
       return `
         <section class="panel">
           <div class="section-title">
@@ -1670,15 +1734,24 @@ using (
             <button class="btn primary" data-add-item="${collection}">+ Add</button>
           </div>
           <div class="item-list">
-            ${items.length ? items.map((item, index) => `
+            ${items.length ? items.map((item, index) => {
+              const isOpen = item.id === openId;
+              const summary = itemSummary(collection, item);
+              return `
               <article class="item">
                 <div class="item-head">
-                  <div class="item-title">${title.slice(0, -1)} ${index + 1}</div>
-                  <button class="btn danger" data-delete-item="${collection}" data-id="${item.id}">Remove</button>
+                  <button class="item-toggle" data-toggle-item="${collection}" data-id="${item.id}" aria-expanded="${isOpen}">
+                    <span class="item-title"><span class="collapse-marker">${isOpen ? "-" : "+"}</span>${title.slice(0, -1)} ${index + 1}</span>
+                    <span class="meta-line">${escapeHtml(summary)}</span>
+                  </button>
+                  <div class="item-actions">
+                    <button class="btn" data-toggle-item="${collection}" data-id="${item.id}">${isOpen ? "Collapse" : "Open"}</button>
+                    <button class="btn danger" data-delete-item="${collection}" data-id="${item.id}">Remove</button>
+                  </div>
                 </div>
-                ${renderBody(item, index)}
+                ${isOpen ? renderBody(item, index) : ""}
               </article>
-            `).join("") : `<p class="meta-line">No ${title.toLowerCase()} added yet.</p>`}
+            `}).join("") : `<p class="meta-line">No ${title.toLowerCase()} added yet.</p>`}
           </div>
           ${items.length ? `
             <div class="toolbar" style="justify-content:flex-start;margin-top:12px">
@@ -2218,6 +2291,12 @@ on conflict (email) do update set active = true;`)}</pre>
       if (target.dataset.addItem === "publicSpaces") addItem("publicSpaces", blankPublicSpace);
       if (target.dataset.addItem === "restrooms") addItem("restrooms", blankRestroom);
       if (target.dataset.deleteItem) deleteItem(target.dataset.deleteItem, target.dataset.id);
+      if (target.dataset.toggleItem) {
+        const collection = target.dataset.toggleItem;
+        const key = expandedKey(collection);
+        state.expandedItems[key] = state.expandedItems[key] === target.dataset.id ? "" : target.dataset.id;
+        renderMain();
+      }
       if (target.dataset.addBarrier) {
         const building = selectedBuilding();
         building.barriers.push(blankBarrier(target.dataset.addBarrier));
