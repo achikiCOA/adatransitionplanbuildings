@@ -686,7 +686,10 @@ add column if not exists updated_at timestamptz not null default now();
 
 insert into public.authorized_users (email)
 values
-  ('replace-with-authorized-email@example.com')
+  ('achiki@ci.athens.oh.us'),
+  ('mjennings@ci.athens.oh.us'),
+  ('sam.tuten@sundaycreekhorizons.com'),
+  ('kobrien@sundaycreekhorizons.com')
 on conflict (email) do update set active = true;
 
 drop policy if exists "Allow public read for field app" on public.ada_buildings;
