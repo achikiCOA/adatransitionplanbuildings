@@ -840,7 +840,8 @@ using (
         syncTimer: null,
         saving: false,
         session: null,
-        user: null
+        user: null,
+        passwordRecovery: false
       }
     };
 
@@ -1041,9 +1042,13 @@ using (
       handleAuthCallback();
       refreshAuthSession();
       setTimeout(refreshAuthSession, 800);
-      state.supabase.client.auth.onAuthStateChange((_event, session) => {
+      state.supabase.client.auth.onAuthStateChange((event, session) => {
         state.supabase.session = session;
         state.supabase.user = session?.user || null;
+        if (event === "PASSWORD_RECOVERY") {
+          state.supabase.passwordRecovery = true;
+          state.supabase.status = "Enter a new password";
+        }
         renderSyncStatus();
         render();
       });
@@ -1070,6 +1075,10 @@ using (
     async function handleAuthCallback() {
       if (!state.supabase.client) return;
       const params = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      if (params.get("type") === "recovery" || hashParams.get("type") === "recovery") {
+        state.supabase.passwordRecovery = true;
+      }
       const code = params.get("code");
       if (!code) return;
       state.supabase.status = "Completing sign-in...";
@@ -1205,6 +1214,58 @@ using (
         state.supabase.user = data.user;
         state.supabase.status = "Signed in";
         showToast("Signed in.");
+      }
+      render();
+    }
+
+    async function sendPasswordReset() {
+      if (!state.supabase.enabled || !state.supabase.client) {
+        showToast("Cloud connection is not available.");
+        return;
+      }
+      const email = document.getElementById("signInEmail")?.value.trim();
+      if (!email) {
+        showToast("Enter your email address first.");
+        return;
+      }
+      state.supabase.status = "Sending password reset email...";
+      renderSyncStatus();
+      const { error } = await state.supabase.client.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.href.split("#")[0]
+      });
+      if (error) {
+        state.supabase.status = `Password reset failed: ${error.message}`;
+      } else {
+        state.supabase.status = "Password reset email sent. Open the link in this browser, then enter a new password.";
+        showToast("Password reset email sent.");
+      }
+      renderSyncStatus();
+    }
+
+    async function updatePassword() {
+      if (!state.supabase.enabled || !state.supabase.client) {
+        showToast("Cloud connection is not available.");
+        return;
+      }
+      const password = document.getElementById("newPassword")?.value;
+      const confirm = document.getElementById("confirmPassword")?.value;
+      if (!password || password.length < 6) {
+        showToast("Enter a new password with at least 6 characters.");
+        return;
+      }
+      if (password !== confirm) {
+        showToast("Passwords do not match.");
+        return;
+      }
+      state.supabase.status = "Updating password...";
+      renderSyncStatus();
+      const { error } = await state.supabase.client.auth.updateUser({ password });
+      if (error) {
+        state.supabase.status = `Password update failed: ${error.message}`;
+      } else {
+        state.supabase.passwordRecovery = false;
+        state.supabase.status = "Password updated";
+        showToast("Password updated.");
       }
       render();
     }
@@ -1726,6 +1787,29 @@ on conflict (email) do update set active = true;`)}</pre>
 
     function renderLoginGate() {
       const gate = document.getElementById("authGate");
+      if (state.supabase.passwordRecovery) {
+        gate.innerHTML = `
+          <section class="login-panel">
+            <h1>Set New Password</h1>
+            <p>Enter a new password for your ADA Building Facility Inventory account.</p>
+            <div class="grid">
+              <div class="field full">
+                <label for="newPassword">New password</label>
+                <input class="input" id="newPassword" type="password" autocomplete="new-password" placeholder="New password">
+              </div>
+              <div class="field full">
+                <label for="confirmPassword">Confirm new password</label>
+                <input class="input" id="confirmPassword" type="password" autocomplete="new-password" placeholder="Confirm password">
+              </div>
+            </div>
+            <div class="login-actions">
+              <button class="btn primary" data-action="update-password">Update Password</button>
+            </div>
+            <div class="login-status" id="loginStatus">${escapeHtml(syncStatusText())}</div>
+          </section>
+        `;
+        return;
+      }
       gate.innerHTML = `
         <section class="login-panel">
           <h1>ADA Building Facility Inventory</h1>
@@ -1742,9 +1826,10 @@ on conflict (email) do update set active = true;`)}</pre>
           </div>
           <div class="login-actions">
             <button class="btn primary" data-action="sign-in-password">Sign In</button>
+            <button class="btn" data-action="send-password-reset">Forgot Password</button>
           </div>
           <hr class="login-divider">
-          <p class="meta-line">Need access or a password reset? Contact the ADA transition plan administrator.</p>
+          <p class="meta-line">Need access? Contact the ADA transition plan administrator.</p>
           <div class="login-status" id="loginStatus">${escapeHtml(syncStatusText())}</div>
         </section>
       `;
@@ -2054,6 +2139,8 @@ on conflict (email) do update set active = true;`)}</pre>
       if (target.dataset.action === "test-cloud") testCloudConnection();
       if (target.dataset.action === "sign-in-password") signInWithPassword();
       if (target.dataset.action === "sign-out") signOut();
+      if (target.dataset.action === "send-password-reset") sendPasswordReset();
+      if (target.dataset.action === "update-password") updatePassword();
       if (target.dataset.action === "copy-sql") {
         await navigator.clipboard.writeText(SUPABASE_SETUP_SQL);
         showToast("Setup SQL copied.");
