@@ -659,6 +659,8 @@
     const STORAGE_KEY = "ada-building-inventory-v1";
     const SUPABASE_CONFIG_KEY = "ada-building-supabase-config-v1";
     const SUPABASE_TABLE = "ada_buildings";
+    const SUPABASE_URL = "https://mrtdlwtnjfzannitnkji.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1ydGRsd3RuamZ6YW5uaXRua2ppIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1MDYzODksImV4cCI6MjA5NjA4MjM4OX0.nChPmWjD54o8EH5PMAc9UkIOxBhj0KnL2anFShubSBE";
     const SUPABASE_SETUP_SQL = `create table if not exists public.ada_buildings (
   id text primary key,
   name text,
@@ -669,11 +671,23 @@
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.authorized_users (
+  email text primary key,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
 alter table public.ada_buildings enable row level security;
+alter table public.authorized_users enable row level security;
 
 alter table public.ada_buildings
 add column if not exists created_by uuid,
 add column if not exists updated_at timestamptz not null default now();
+
+insert into public.authorized_users (email)
+values
+  ('replace-with-authorized-email@example.com')
+on conflict (email) do update set active = true;
 
 drop policy if exists "Allow public read for field app" on public.ada_buildings;
 drop policy if exists "Allow public insert for field app" on public.ada_buildings;
@@ -683,31 +697,76 @@ drop policy if exists "Allow signed-in read for field app" on public.ada_buildin
 drop policy if exists "Allow signed-in insert for field app" on public.ada_buildings;
 drop policy if exists "Allow signed-in update for field app" on public.ada_buildings;
 drop policy if exists "Allow signed-in delete for field app" on public.ada_buildings;
+drop policy if exists "Allow authorized users to read authorized list" on public.authorized_users;
+
+create policy "Allow authorized users to read authorized list"
+on public.authorized_users
+for select
+to authenticated
+using (
+  email = auth.jwt() ->> 'email'
+  and active = true
+);
 
 create policy "Allow signed-in read for field app"
 on public.ada_buildings
 for select
 to authenticated
-using (true);
+using (
+  exists (
+    select 1
+    from public.authorized_users
+    where email = auth.jwt() ->> 'email'
+      and active = true
+  )
+);
 
 create policy "Allow signed-in insert for field app"
 on public.ada_buildings
 for insert
 to authenticated
-with check (auth.uid() is not null);
+with check (
+  exists (
+    select 1
+    from public.authorized_users
+    where email = auth.jwt() ->> 'email'
+      and active = true
+  )
+);
 
 create policy "Allow signed-in update for field app"
 on public.ada_buildings
 for update
 to authenticated
-using (true)
-with check (auth.uid() is not null);
+using (
+  exists (
+    select 1
+    from public.authorized_users
+    where email = auth.jwt() ->> 'email'
+      and active = true
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.authorized_users
+    where email = auth.jwt() ->> 'email'
+      and active = true
+  )
+);
 
 create policy "Allow signed-in delete for field app"
 on public.ada_buildings
 for delete
 to authenticated
-using (true);`;
+using (
+  exists (
+    select 1
+    from public.authorized_users
+    where email = auth.jwt() ->> 'email'
+      and active = true
+  )
+);`;
 
     const state = {
       buildings: [],
@@ -716,8 +775,8 @@ using (true);`;
       search: "",
       filterStatus: "",
       supabase: {
-        url: "",
-        anonKey: "",
+        url: SUPABASE_URL,
+        anonKey: SUPABASE_ANON_KEY,
         enabled: false,
         status: "Local only",
         lastSync: "",
@@ -870,17 +929,7 @@ using (true);`;
 
     function load() {
       const raw = localStorage.getItem(STORAGE_KEY);
-      const supabaseRaw = localStorage.getItem(SUPABASE_CONFIG_KEY);
-      if (supabaseRaw) {
-        try {
-          const config = JSON.parse(supabaseRaw);
-          state.supabase.url = config.url || "";
-          state.supabase.anonKey = config.anonKey || "";
-          initSupabaseClient();
-        } catch (error) {
-          state.supabase.status = "Cloud config could not be loaded";
-        }
-      }
+      initSupabaseClient();
       if (!raw) return;
       try {
         const data = JSON.parse(raw);
@@ -901,8 +950,8 @@ using (true);`;
 
     function saveSupabaseConfig() {
       localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify({
-        url: state.supabase.url,
-        anonKey: state.supabase.anonKey
+        url: SUPABASE_URL,
+        anonKey: SUPABASE_ANON_KEY
       }));
     }
 
@@ -1036,6 +1085,9 @@ using (true);`;
       }
       if (/relation .* does not exist/i.test(message) || /could not find the table/i.test(message)) {
         return `${prefix}: ${message}. Run the setup SQL in Supabase SQL Editor.`;
+      }
+      if (/row-level security/i.test(message) || /permission denied/i.test(message)) {
+        return `${prefix}: this signed-in email is not authorized. Add the email to the authorized_users table in Supabase.`;
       }
       return `${prefix}: ${message}`;
     }
@@ -1499,27 +1551,10 @@ using (true);`;
       return `
         <section class="panel">
           <div class="section-title">
-            <h3>Supabase Cloud Sync</h3>
+            <h3>Cloud Access</h3>
             <span class="pill ${state.supabase.enabled ? "good" : "warn"}" id="syncStatus">${escapeHtml(syncStatusText())}</span>
           </div>
-          <div class="grid">
-            <div class="field wide">
-              <label for="supabaseUrl">Supabase project URL</label>
-              <input class="input" id="supabaseUrl" type="url" value="${escapeAttr(state.supabase.url)}" placeholder="https://your-project.supabase.co">
-              <span class="hint">Supabase Dashboard: Project Settings > API > Project URL.</span>
-            </div>
-            <div class="field wide">
-              <label for="supabaseAnonKey">Supabase anon public key</label>
-              <input class="input" id="supabaseAnonKey" type="password" value="${escapeAttr(state.supabase.anonKey)}" placeholder="Paste anon public key">
-              <span class="hint">Use the anon public key only. Never paste the service_role key into this browser app.</span>
-            </div>
-            <div class="field full">
-              <div class="toolbar" style="justify-content:flex-start">
-                <button class="btn primary" data-action="save-supabase">Save Connection</button>
-                <button class="btn danger" data-action="clear-supabase">Clear Connection</button>
-              </div>
-            </div>
-          </div>
+          <p class="meta-line">The shared database connection is built into this app. Authorized users only need to sign in with email before loading or saving cloud records.</p>
         </section>
         <section class="panel">
           <div class="section-title">
@@ -1558,6 +1593,12 @@ using (true);`;
           </div>
           <p class="meta-line">Paste this into Supabase SQL Editor after publishing this update. It replaces the public pilot policies with signed-in-user policies.</p>
           <pre class="code-box">${escapeHtml(SUPABASE_SETUP_SQL)}</pre>
+        </section>
+        <section class="panel">
+          <div class="section-title"><h3>Authorize More Users</h3></div>
+          <pre class="code-box">${escapeHtml(`insert into public.authorized_users (email)
+values ('inspector@example.com')
+on conflict (email) do update set active = true;`)}</pre>
         </section>
       `;
     }
@@ -1866,27 +1907,11 @@ using (true);`;
         await navigator.clipboard.writeText(planNarrative(selectedBuilding()));
         showToast("Narrative copied.");
       }
-      if (target.dataset.action === "save-supabase") {
-        state.supabase.url = document.getElementById("supabaseUrl")?.value || "";
-        state.supabase.anonKey = document.getElementById("supabaseAnonKey")?.value || "";
-        initSupabaseClient();
-        saveSupabaseConfig();
-        renderMain();
-        showToast(state.supabase.enabled ? "Supabase connection saved." : "Supabase settings incomplete.");
-      }
       if (target.dataset.action === "load-cloud") loadCloudAll();
       if (target.dataset.action === "save-cloud") saveCloudAll();
       if (target.dataset.action === "test-cloud") testCloudConnection();
       if (target.dataset.action === "sign-in-email") signInWithEmail();
       if (target.dataset.action === "sign-out") signOut();
-      if (target.dataset.action === "clear-supabase") {
-        localStorage.removeItem(SUPABASE_CONFIG_KEY);
-        state.supabase.url = "";
-        state.supabase.anonKey = "";
-        initSupabaseClient();
-        renderMain();
-        showToast("Supabase connection cleared.");
-      }
       if (target.dataset.action === "copy-sql") {
         await navigator.clipboard.writeText(SUPABASE_SETUP_SQL);
         showToast("Setup SQL copied.");
