@@ -975,10 +975,19 @@ using (
       }
       state.supabase.url = url;
       state.supabase.anonKey = anonKey;
-      state.supabase.client = window.supabase.createClient(url, anonKey);
+      state.supabase.client = window.supabase.createClient(url, anonKey, {
+        auth: {
+          autoRefreshToken: true,
+          detectSessionInUrl: true,
+          flowType: "pkce",
+          persistSession: true
+        }
+      });
       state.supabase.enabled = true;
       state.supabase.status = `Cloud configured for ${url}`;
+      handleAuthCallback();
       refreshAuthSession();
+      setTimeout(refreshAuthSession, 800);
       state.supabase.client.auth.onAuthStateChange((_event, session) => {
         state.supabase.session = session;
         state.supabase.user = session?.user || null;
@@ -1003,6 +1012,23 @@ using (
 
     function normalizeSupabaseKey(value) {
       return value.trim().replace(/^bearer\s+/i, "").replace(/^apikey:\s*/i, "").trim();
+    }
+
+    async function handleAuthCallback() {
+      if (!state.supabase.client) return;
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("code");
+      if (!code) return;
+      state.supabase.status = "Completing sign-in...";
+      renderSyncStatus();
+      const { error } = await state.supabase.client.auth.exchangeCodeForSession(code);
+      if (error) {
+        state.supabase.status = `Sign-in callback failed: ${error.message}`;
+        renderSyncStatus();
+        return;
+      }
+      window.history.replaceState({}, document.title, window.location.pathname);
+      await refreshAuthSession();
     }
 
     function scheduleCloudSave() {
