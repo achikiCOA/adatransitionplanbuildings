@@ -1054,7 +1054,7 @@ using (
       if (!state.supabase.user) {
         state.supabase.status = "Sign in before using cloud records";
         renderSyncStatus();
-        showToast("Sign in with email first.");
+        showToast("Sign in with email and password first.");
         return false;
       }
       return true;
@@ -1121,30 +1121,69 @@ using (
       return `${prefix}: ${message}`;
     }
 
-    async function signInWithEmail() {
-      if (!state.supabase.enabled || !state.supabase.client) {
-        showToast("Save Supabase connection first.");
-        return;
-      }
+    function authFormValues() {
       const email = document.getElementById("signInEmail")?.value.trim();
+      const password = document.getElementById("signInPassword")?.value;
       if (!email) {
         showToast("Enter an email address.");
+        return null;
+      }
+      if (!password || password.length < 6) {
+        showToast("Enter a password with at least 6 characters.");
+        return null;
+      }
+      return { email, password };
+    }
+
+    async function signInWithPassword() {
+      if (!state.supabase.enabled || !state.supabase.client) {
+        showToast("Cloud connection is not available.");
         return;
       }
-      state.supabase.status = "Sending sign-in link...";
+      const values = authFormValues();
+      if (!values) return;
+      state.supabase.status = "Signing in...";
       renderSyncStatus();
-      const { error } = await state.supabase.client.auth.signInWithOtp({
-        email,
+      const { data, error } = await state.supabase.client.auth.signInWithPassword(values);
+      if (error) {
+        state.supabase.status = `Sign-in failed: ${error.message}`;
+      } else {
+        state.supabase.session = data.session;
+        state.supabase.user = data.user;
+        state.supabase.status = "Signed in";
+        showToast("Signed in.");
+      }
+      renderMain();
+    }
+
+    async function createPasswordAccount() {
+      if (!state.supabase.enabled || !state.supabase.client) {
+        showToast("Cloud connection is not available.");
+        return;
+      }
+      const values = authFormValues();
+      if (!values) return;
+      state.supabase.status = "Creating account...";
+      renderSyncStatus();
+      const { data, error } = await state.supabase.client.auth.signUp({
+        email: values.email,
+        password: values.password,
         options: {
           emailRedirectTo: window.location.href.split("#")[0]
         }
       });
       if (error) {
-        state.supabase.status = `Sign-in failed: ${error.message}`;
+        state.supabase.status = `Account creation failed: ${error.message}`;
+      } else if (data.session) {
+        state.supabase.session = data.session;
+        state.supabase.user = data.user;
+        state.supabase.status = "Account created and signed in";
+        showToast("Account created.");
       } else {
-        state.supabase.status = "Check your email for the sign-in link";
+        state.supabase.status = "Account created. Check your email to confirm it, then sign in.";
+        showToast("Check your email to confirm the account.");
       }
-      renderSyncStatus();
+      renderMain();
     }
 
     async function signOut() {
@@ -1583,22 +1622,28 @@ using (
             <h3>Cloud Access</h3>
             <span class="pill ${state.supabase.enabled ? "good" : "warn"}" id="syncStatus">${escapeHtml(syncStatusText())}</span>
           </div>
-          <p class="meta-line">The shared database connection is built into this app. Authorized users only need to sign in with email before loading or saving cloud records.</p>
+          <p class="meta-line">The shared database connection is built into this app. Authorized users sign in with email and password before loading or saving cloud records.</p>
         </section>
         <section class="panel">
           <div class="section-title">
-            <h3>Sign In</h3>
+            <h3>Account</h3>
             <span class="pill ${state.supabase.user ? "good" : "warn"}">${escapeHtml(state.supabase.user ? state.supabase.user.email : "Not signed in")}</span>
           </div>
           <div class="grid">
-            <div class="field wide">
+            <div class="field">
               <label for="signInEmail">Email address</label>
               <input class="input" id="signInEmail" type="email" value="${escapeAttr(state.supabase.user?.email || "")}" placeholder="name@example.com">
-              <span class="hint">Supabase will email a magic sign-in link. Open the link in this same browser, then return here.</span>
+              <span class="hint">Use one of the authorized email addresses.</span>
+            </div>
+            <div class="field">
+              <label for="signInPassword">Password</label>
+              <input class="input" id="signInPassword" type="password" autocomplete="current-password" placeholder="Password">
+              <span class="hint">Minimum 6 characters.</span>
             </div>
             <div class="field full">
               <div class="toolbar" style="justify-content:flex-start">
-                <button class="btn primary" data-action="sign-in-email">Send Sign-In Link</button>
+                <button class="btn primary" data-action="sign-in-password">Sign In</button>
+                <button class="btn" data-action="create-account">Create Account</button>
                 <button class="btn" data-action="sign-out" ${state.supabase.user ? "" : "disabled"}>Sign Out</button>
               </div>
             </div>
@@ -1939,7 +1984,8 @@ on conflict (email) do update set active = true;`)}</pre>
       if (target.dataset.action === "load-cloud") loadCloudAll();
       if (target.dataset.action === "save-cloud") saveCloudAll();
       if (target.dataset.action === "test-cloud") testCloudConnection();
-      if (target.dataset.action === "sign-in-email") signInWithEmail();
+      if (target.dataset.action === "sign-in-password") signInWithPassword();
+      if (target.dataset.action === "create-account") createPasswordAccount();
       if (target.dataset.action === "sign-out") signOut();
       if (target.dataset.action === "copy-sql") {
         await navigator.clipboard.writeText(SUPABASE_SETUP_SQL);
